@@ -731,17 +731,6 @@ bool sinsp_container_engine_mesos::set_mesos_task_id(sinsp_container_info* conta
 	return false;
 }
 
-string sinsp_container_manager::get_mesos_task_id(const string& container_id)
-{
-	string mesos_task_id;
-	const sinsp_container_info* container = get_container(container_id);
-	if(container)
-	{
-		mesos_task_id = container->m_mesos_task_id;
-	}
-	return mesos_task_id;
-}
-
 bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool query_os_for_missing_info)
 {
 	ASSERT(tinfo);

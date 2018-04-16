@@ -233,7 +233,6 @@ public:
 	bool resolve_container(sinsp_threadinfo* tinfo, bool query_os_for_missing_info);
 	void dump_containers(scap_dumper_t* dumper);
 	string get_container_name(sinsp_threadinfo* tinfo);
-	string get_mesos_task_id(const string& container_id);
 
 	bool container_exists(const string& container_id) const {
 		return m_containers.find(container_id) != m_containers.end();
