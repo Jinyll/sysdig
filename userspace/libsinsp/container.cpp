@@ -269,13 +269,8 @@ bool sinsp_container_engine_docker::parse_docker(sinsp_container_info *container
 		}
 	}
 
-	static const vector<std::string> task_id_envs = { "MESOS_TASK_ID", "mesos_task_id", "MESOS_EXECUTOR_ID" };
-	string mesos_task_id;
-
-	if(sinsp_utils::find_first_env(mesos_task_id, container->get_env(), task_id_envs) &&
-		!mesos_task_id.empty())
+	if (sinsp_container_engine_mesos::set_mesos_task_id(container, m_tinfo))
 	{
-		container->m_mesos_task_id = mesos_task_id;
 		g_logger.log("Mesos Docker container: [" + root["Id"].asString() + "], Mesos task ID: [" + container->m_mesos_task_id + ']', sinsp_logger::SEV_DEBUG);
 	}
 

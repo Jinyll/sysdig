@@ -202,9 +202,9 @@ public:
 	virtual bool resolve();
 	virtual void fill_info();
 
+	static bool set_mesos_task_id(sinsp_container_info* container, sinsp_threadinfo* tinfo);
 private:
-	string get_env_mesos_task_id(sinsp_threadinfo* tinfo);
-	bool set_mesos_task_id(sinsp_container_info* container, sinsp_threadinfo* tinfo);
+	static string get_env_mesos_task_id(sinsp_threadinfo* tinfo);
 };
 
 class sinsp_container_engine_rkt : public sinsp_container_engine
