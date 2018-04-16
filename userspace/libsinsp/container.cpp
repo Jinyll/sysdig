@@ -82,7 +82,25 @@ sinsp_container_info::container_mount_info *sinsp_container_info::mount_by_dest(
 	return NULL;
 }
 
+#ifdef CYGWING_AGENT
 
+bool sinsp_container_engine_docker_win::resolve()
+{
+	wh_docker_container_info wcinfo = wh_docker_resolve_pid(m_inspector->get_wmi_handle(), tinfo->m_pid);
+	if(wcinfo.m_res)
+	{
+		container_info.m_type = CT_DOCKER;
+		container_info.m_id = wcinfo.m_container_id;
+		container_info.m_name = wcinfo.m_container_name;
+		return true;
+	}
+}
+
+void sinsp_container_engine_docker_win::fill_info()
+{
+}
+
+#else
 bool sinsp_container_engine_docker::resolve()
 {
 	for(auto it = m_tinfo->m_cgroups.begin(); it != m_tinfo->m_cgroups.end(); ++it)
@@ -715,6 +733,7 @@ bool sinsp_container_engine_rkt::parse_rkt(sinsp_container_info *container, cons
 	}
 	return ret;
 }
+#endif
 
 sinsp_container_manager::sinsp_container_manager(sinsp* inspector) :
 	m_inspector(inspector),
@@ -800,30 +819,14 @@ bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool qu
 {
 	ASSERT(tinfo);
 	sinsp_container_info container_info;
-
-#ifdef CYGWING_AGENT
-	wh_docker_container_info wcinfo = wh_docker_resolve_pid(m_inspector->get_wmi_handle(), tinfo->m_pid);
-	if(wcinfo.m_res == false)
-	{
-		tinfo->m_container_id = "";
-	}
-	else
-	{
-		container_info.m_type = CT_DOCKER;
-		container_info.m_id = wcinfo.m_container_id;
-		container_info.m_name = wcinfo.m_container_name;	
-		if (!container_exists(container_info.m_id))
-		{
-			add_container(container_info, tinfo);
-			if(container_to_sinsp_event(container_to_json(container_info), &m_inspector->m_meta_evt))
-			{
-				m_inspector->m_meta_evt_pending = true;
-			}
-		}
-	}
-#else
 	sinsp_container_engine* engine = nullptr;
 
+#ifdef CYGWING_AGENT
+	sinsp_container_engine_docker_win docker_win(this, tinfo, container_info, query_os_for_missing_info);
+
+	if (docker_win.resolve()) engine = &docker_win;
+
+#else
 	sinsp_container_engine_docker docker(this, tinfo, container_info, query_os_for_missing_info);
 	sinsp_container_engine_lxc lxc(this, tinfo, container_info, query_os_for_missing_info);
 	sinsp_container_engine_libvirt_lxc libvirt_lxc(this, tinfo, container_info, query_os_for_missing_info);
@@ -835,6 +838,7 @@ bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool qu
 	else if (libvirt_lxc.resolve()) engine = &libvirt_lxc;
 	else if (mesos.resolve()) engine = &mesos;
 	else if (rkt.resolve()) engine = &rkt;
+#endif // CYGWING_AGENT
 
 	if(!engine) {
 		tinfo->m_container_id = "";
@@ -855,7 +859,6 @@ bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool qu
 	}
 
 	return engine != nullptr;
-#endif // CYGWING_AGENT
 
 }
 

@@ -167,6 +167,20 @@ protected:
 	bool m_query_os_for_missing_info;
 };
 
+#ifdef CYGWING_AGENT
+class sinsp_container_engine_docker_win : public sinsp_container_engine
+{
+public:
+	using sinsp_container_engine::sinsp_container_engine;
+	virtual bool resolve();
+	virtual void fill_info();
+
+private:
+	bool parse_docker(sinsp_container_info *container);
+	static sinsp_docker_response get_docker(const sinsp_container_manager* manager, const string& api_version, const string& container_id, string& json);
+};
+
+#else
 class sinsp_container_engine_docker : public sinsp_container_engine
 {
 public:
@@ -220,6 +234,7 @@ private:
 	string m_rkt_podid;
 	string m_rkt_appname;
 };
+#endif
 
 class sinsp_container_manager
 {
