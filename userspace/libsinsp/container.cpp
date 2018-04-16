@@ -431,6 +431,76 @@ void sinsp_container_engine_mesos::fill_info()
 	m_container_info.m_name = m_container_info.m_id;
 }
 
+string sinsp_container_engine_mesos::get_env_mesos_task_id(sinsp_threadinfo* tinfo)
+{
+	string mtid;
+
+	sinsp_threadinfo::visitor_func_t visitor = [&mtid] (sinsp_threadinfo *ptinfo)
+	{
+		// Mesos task ID detection is not a straightforward task;
+		// this list may have to be extended.
+		mtid = ptinfo->get_env("MESOS_TASK_ID"); // Marathon
+		if(!mtid.empty()) { return false; }
+		mtid = ptinfo->get_env("mesos_task_id"); // Chronos
+		if(!mtid.empty()) { return false; }
+		mtid = ptinfo->get_env("MESOS_EXECUTOR_ID"); // others
+		if(!mtid.empty()) { return false; }
+
+		return true;
+	};
+
+	// Try the current thread first. visitor returns true if mtid
+	// was not filled in. In this case we should traverse the
+	// parents.
+	if(tinfo && visitor(tinfo))
+	{
+		tinfo->traverse_parent_state(visitor);
+	}
+
+	return mtid;
+}
+
+bool sinsp_container_engine_mesos::set_mesos_task_id(sinsp_container_info* container, sinsp_threadinfo* tinfo)
+{
+	ASSERT(container);
+	ASSERT(tinfo);
+
+	// there are applications that do not share their environment in /proc/[PID]/environ
+	// since we need MESOS_TASK_ID environment variable to discover Mesos containers,
+	// there is a workaround for such cases:
+	// - for docker containers, we discover it directly from container, through Remote API
+	//   (see sinsp_container_manager::parse_docker() for details)
+	// - for mesos native containers, parent process has the MESOS_TASK_ID (or equivalent, see
+	//   get_env_mesos_task_id(sinsp_threadinfo*) implementation) environment variable, so we
+	//   peek into the parent process environment to discover it
+
+	if(container && tinfo)
+	{
+		string& mtid = container->m_mesos_task_id;
+		if(mtid.empty())
+		{
+			mtid = get_env_mesos_task_id(tinfo);
+
+			// Ensure that the mesos task id vaguely looks
+			// like a real id. We assume it must be at
+			// least 3 characters and contain a dot or underscore
+			if(!mtid.empty() && mtid.length()>=3 &&
+			   (mtid.find_first_of("._") != std::string::npos))
+			{
+				g_logger.log("Mesos native container: [" + container->m_id + "], Mesos task ID: " + mtid, sinsp_logger::SEV_DEBUG);
+				return true;
+			}
+			else
+			{
+				g_logger.log("Mesos container [" + container->m_id + "],"
+					     "thread [" + std::to_string(tinfo->m_tid) +
+					     "], has likely malformed mesos task id [" + mtid + "], ignoring", sinsp_logger::SEV_DEBUG);
+			}
+		}
+	}
+	return false;
+}
+
 
 bool sinsp_container_engine_rkt::resolve()
 {
@@ -581,6 +651,75 @@ void sinsp_container_engine_rkt::fill_info()
 	parse_rkt(&m_container_info, m_rkt_podid, m_rkt_appname);
 }
 
+bool sinsp_container_engine_rkt::parse_rkt(sinsp_container_info *container, const string &podid, const string &appname)
+{
+	bool ret = false;
+	Json::Reader reader;
+	Json::Value jroot;
+
+	char image_manifest_path[SCAP_MAX_PATH_SIZE];
+	snprintf(image_manifest_path, sizeof(image_manifest_path), "%s/var/lib/rkt/pods/run/%s/appsinfo/%s/manifest", scap_get_host_root(), podid.c_str(), appname.c_str());
+	ifstream image_manifest(image_manifest_path);
+	if(reader.parse(image_manifest, jroot))
+	{
+		container->m_image = jroot["name"].asString();
+		for(const auto& label_entry : jroot["labels"])
+		{
+			container->m_labels.emplace(label_entry["name"].asString(), label_entry["value"].asString());
+		}
+		auto version_label_it = container->m_labels.find("version");
+		if(version_label_it != container->m_labels.end())
+		{
+			container->m_image += ":" + version_label_it->second;
+		}
+		ret = true;
+	}
+
+	char net_info_path[SCAP_MAX_PATH_SIZE];
+	snprintf(net_info_path, sizeof(net_info_path), "%s/var/lib/rkt/pods/run/%s/net-info.json", scap_get_host_root(), podid.c_str());
+	ifstream net_info(net_info_path);
+	if(reader.parse(net_info, jroot) && jroot.size() > 0)
+	{
+		const auto& first_net = jroot[0];
+		if(inet_pton(AF_INET, first_net["ip"].asCString(), &container->m_container_ip) == -1)
+		{
+			ASSERT(false);
+		}
+		container->m_container_ip = ntohl(container->m_container_ip);
+	}
+
+	char pod_manifest_path[SCAP_MAX_PATH_SIZE];
+	snprintf(pod_manifest_path, sizeof(pod_manifest_path), "%s/var/lib/rkt/pods/run/%s/pod", scap_get_host_root(), podid.c_str());
+	ifstream pod_manifest(pod_manifest_path);
+	unordered_map<string, uint32_t> image_ports;
+	if(reader.parse(pod_manifest, jroot) && jroot.size() > 0)
+	{
+		for(const auto& japp : jroot["apps"])
+		{
+			if (japp["name"].asString() == appname)
+			{
+				for(const auto& image_port : japp["app"]["ports"])
+				{
+					image_ports[image_port["name"].asString()] = image_port["port"].asUInt();
+				}
+				break;
+			}
+		}
+		for(const auto& jport : jroot["ports"])
+		{
+			auto host_port = jport["hostPort"].asUInt();
+			auto container_port_it = image_ports.find(jport["name"].asString());
+			if(host_port > 0 && container_port_it != image_ports.end())
+			{
+				sinsp_container_info::container_port_mapping port_mapping;
+				port_mapping.m_host_port = host_port;
+				port_mapping.m_container_port = container_port_it->second;
+				container->m_port_mappings.emplace_back(move(port_mapping));
+			}
+		}
+	}
+	return ret;
+}
 
 sinsp_container_manager::sinsp_container_manager(sinsp* inspector) :
 	m_inspector(inspector),
@@ -661,75 +800,6 @@ sinsp_container_info* sinsp_container_manager::get_container(const string& conta
 	return NULL;
 }
 
-string sinsp_container_engine_mesos::get_env_mesos_task_id(sinsp_threadinfo* tinfo)
-{
-	string mtid;
-
-	sinsp_threadinfo::visitor_func_t visitor = [&mtid] (sinsp_threadinfo *ptinfo)
-	{
-		// Mesos task ID detection is not a straightforward task;
-		// this list may have to be extended.
-		mtid = ptinfo->get_env("MESOS_TASK_ID"); // Marathon
-		if(!mtid.empty()) { return false; }
-		mtid = ptinfo->get_env("mesos_task_id"); // Chronos
-		if(!mtid.empty()) { return false; }
-		mtid = ptinfo->get_env("MESOS_EXECUTOR_ID"); // others
-		if(!mtid.empty()) { return false; }
-
-		return true;
-	};
-
-	// Try the current thread first. visitor returns true if mtid
-	// was not filled in. In this case we should traverse the
-	// parents.
-	if(tinfo && visitor(tinfo))
-	{
-		tinfo->traverse_parent_state(visitor);
-	}
-
-	return mtid;
-}
-
-bool sinsp_container_engine_mesos::set_mesos_task_id(sinsp_container_info* container, sinsp_threadinfo* tinfo)
-{
-	ASSERT(container);
-	ASSERT(tinfo);
-
-	// there are applications that do not share their environment in /proc/[PID]/environ
-	// since we need MESOS_TASK_ID environment variable to discover Mesos containers,
-	// there is a workaround for such cases:
-	// - for docker containers, we discover it directly from container, through Remote API
-	//   (see sinsp_container_manager::parse_docker() for details)
-	// - for mesos native containers, parent process has the MESOS_TASK_ID (or equivalent, see
-	//   get_env_mesos_task_id(sinsp_threadinfo*) implementation) environment variable, so we
-	//   peek into the parent process environment to discover it
-
-	if(container && tinfo)
-	{
-		string& mtid = container->m_mesos_task_id;
-		if(mtid.empty())
-		{
-			mtid = get_env_mesos_task_id(tinfo);
-
-			// Ensure that the mesos task id vaguely looks
-			// like a real id. We assume it must be at
-			// least 3 characters and contain a dot or underscore
-			if(!mtid.empty() && mtid.length()>=3 &&
-			   (mtid.find_first_of("._") != std::string::npos))
-			{
-				g_logger.log("Mesos native container: [" + container->m_id + "], Mesos task ID: " + mtid, sinsp_logger::SEV_DEBUG);
-				return true;
-			}
-			else
-			{
-				g_logger.log("Mesos container [" + container->m_id + "],"
-					     "thread [" + std::to_string(tinfo->m_tid) +
-					     "], has likely malformed mesos task id [" + mtid + "], ignoring", sinsp_logger::SEV_DEBUG);
-			}
-		}
-	}
-	return false;
-}
 
 bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool query_os_for_missing_info)
 {
@@ -940,75 +1010,6 @@ sinsp_docker_response sinsp_container_engine_docker::get_docker(const sinsp_cont
 	return sinsp_docker_response::RESP_OK;
 }
 
-bool sinsp_container_engine_rkt::parse_rkt(sinsp_container_info *container, const string &podid, const string &appname)
-{
-	bool ret = false;
-	Json::Reader reader;
-	Json::Value jroot;
-
-	char image_manifest_path[SCAP_MAX_PATH_SIZE];
-	snprintf(image_manifest_path, sizeof(image_manifest_path), "%s/var/lib/rkt/pods/run/%s/appsinfo/%s/manifest", scap_get_host_root(), podid.c_str(), appname.c_str());
-	ifstream image_manifest(image_manifest_path);
-	if(reader.parse(image_manifest, jroot))
-	{
-		container->m_image = jroot["name"].asString();
-		for(const auto& label_entry : jroot["labels"])
-		{
-			container->m_labels.emplace(label_entry["name"].asString(), label_entry["value"].asString());
-		}
-		auto version_label_it = container->m_labels.find("version");
-		if(version_label_it != container->m_labels.end())
-		{
-			container->m_image += ":" + version_label_it->second;
-		}
-		ret = true;
-	}
-
-	char net_info_path[SCAP_MAX_PATH_SIZE];
-	snprintf(net_info_path, sizeof(net_info_path), "%s/var/lib/rkt/pods/run/%s/net-info.json", scap_get_host_root(), podid.c_str());
-	ifstream net_info(net_info_path);
-	if(reader.parse(net_info, jroot) && jroot.size() > 0)
-	{
-		const auto& first_net = jroot[0];
-		if(inet_pton(AF_INET, first_net["ip"].asCString(), &container->m_container_ip) == -1)
-		{
-			ASSERT(false);
-		}
-		container->m_container_ip = ntohl(container->m_container_ip);
-	}
-
-	char pod_manifest_path[SCAP_MAX_PATH_SIZE];
-	snprintf(pod_manifest_path, sizeof(pod_manifest_path), "%s/var/lib/rkt/pods/run/%s/pod", scap_get_host_root(), podid.c_str());
-	ifstream pod_manifest(pod_manifest_path);
-	unordered_map<string, uint32_t> image_ports;
-	if(reader.parse(pod_manifest, jroot) && jroot.size() > 0)
-	{
-		for(const auto& japp : jroot["apps"])
-		{
-			if (japp["name"].asString() == appname)
-			{
-				for(const auto& image_port : japp["app"]["ports"])
-				{
-					image_ports[image_port["name"].asString()] = image_port["port"].asUInt();
-				}
-				break;
-			}
-		}
-		for(const auto& jport : jroot["ports"])
-		{
-			auto host_port = jport["hostPort"].asUInt();
-			auto container_port_it = image_ports.find(jport["name"].asString());
-			if(host_port > 0 && container_port_it != image_ports.end())
-			{
-				sinsp_container_info::container_port_mapping port_mapping;
-				port_mapping.m_host_port = host_port;
-				port_mapping.m_container_port = container_port_it->second;
-				container->m_port_mappings.emplace_back(move(port_mapping));
-			}
-		}
-	}
-	return ret;
-}
 #endif
 
 const unordered_map<string, sinsp_container_info>* sinsp_container_manager::get_containers()
