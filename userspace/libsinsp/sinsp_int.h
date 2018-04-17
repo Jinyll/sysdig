@@ -136,6 +136,7 @@ public:
 	virtual void on_execve(sinsp_evt* evt) = 0;
 	virtual void on_clone(sinsp_evt* evt, sinsp_threadinfo* newtinfo) = 0;
 	virtual void on_bind(sinsp_evt* evt) = 0;
+	virtual sinsp_container_engine* on_resolve_container(const sinsp_container_manager* manager, sinsp_threadinfo* tinfo, sinsp_container_info& container_info, bool query_os_for_missing_info) = 0;
 	virtual void on_new_container(const sinsp_container_info& container_info, sinsp_threadinfo *tinfo) = 0;
 	virtual void on_remove_container(const sinsp_container_info& container_info) = 0;
 };

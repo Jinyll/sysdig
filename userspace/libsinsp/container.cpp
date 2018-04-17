@@ -821,10 +821,13 @@ bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool qu
 	sinsp_container_info container_info;
 	sinsp_container_engine* engine = nullptr;
 
+	sinsp_container_engine* plugin_engine = m_inspector->m_parser->m_fd_listener->on_resolve_container(this, tinfo, container_info, query_os_for_missing_info);
+
 #ifdef CYGWING_AGENT
 	sinsp_container_engine_docker_win docker_win(this, tinfo, container_info, query_os_for_missing_info);
 
-	if (docker_win.resolve()) engine = &docker_win;
+	if (plugin_engine && plugin_engine->resolve()) engine = plugin_engine;
+	else if (docker_win.resolve()) engine = &docker_win;
 
 #else
 	sinsp_container_engine_docker docker(this, tinfo, container_info, query_os_for_missing_info);
@@ -833,7 +836,8 @@ bool sinsp_container_manager::resolve_container(sinsp_threadinfo* tinfo, bool qu
 	sinsp_container_engine_mesos mesos(this, tinfo, container_info, query_os_for_missing_info);
 	sinsp_container_engine_rkt rkt(this, tinfo, container_info, query_os_for_missing_info);
 
-	if (docker.resolve()) engine = &docker;
+	if (plugin_engine && plugin_engine->resolve()) engine = plugin_engine;
+	else if (docker.resolve()) engine = &docker;
 	else if (lxc.resolve()) engine = &lxc;
 	else if (libvirt_lxc.resolve()) engine = &libvirt_lxc;
 	else if (mesos.resolve()) engine = &mesos;
