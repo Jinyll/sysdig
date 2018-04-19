@@ -2474,3 +2474,31 @@ scap_dump_flags sinsp_evt::get_dump_flags(OUT bool* should_drop)
 	return (scap_dump_flags)dflags;
 }
 #endif
+
+bool sinsp_evt::falco_consider()
+{
+	enum ppm_event_flags flags;
+	ppm_event_flags skip_flags = (ppm_event_flags) (EF_SKIPPARSERESET | EF_UNUSED | EF_OLD_VERSION | EF_DROP_FALCO);
+
+	uint16_t etype = get_type();
+
+	if(etype == PPME_GENERIC_E || etype == PPME_GENERIC_X)
+	{
+		sinsp_evt_param *parinfo = get_param(0);
+		ASSERT(parinfo->m_len == sizeof(uint16_t));
+		uint16_t scid = *(uint16_t *)parinfo->m_val;
+
+		flags = g_infotables.m_syscall_info_table[scid].flags;
+	}
+	else
+	{
+		flags = get_info_flags();
+	}
+
+	if (flags & skip_flags)
+	{
+		return false;
+	}
+
+	return true;
+}
